@@ -13,7 +13,7 @@ Brief description
 
 Sections of the repo
 
-## Contriute to This Work
+## Contribute to This Work
 
 Steps
 
