@@ -112,6 +112,7 @@ class ModelEvaluator:
 
             new_entry = {'correct_logit': correct_answer_logit, 'wrong_logit': wrong_answer_logit}
             self.auc_data.append(new_entry)
+        return self.results
 
     def compute_metrics(self, y_test):
         preds = []
@@ -171,17 +172,21 @@ class ModelEvaluator:
 def softmax_func(logits):
     return softmax(logits)
 
-def process_data():
-    pass
+def process_data(example_file, test_file):
+    df = pd.read_csv(example_file)
+    df2 = pd.read_csv(test_file)
+    examples = df.iloc[:, 0]
+    labels = df.iloc[:, 1]
+    test_samples = df2.iloc[:, 0]
+    y_test = df2.iloc[:, 1]
+    return examples, labels, test_samples, y_test
+
 
 def visualize_metrics():
     pass
 
-def main(large, num_gpus, zeroshot):
-    #os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-    #os.environ['CUDA_VISIBLE_DEVICES'] = '1,2,3,4,5,6,7,0'
-
-    examples, labels, test_samples, y_test = process_data()
+def main(large, num_gpus, zeroshot, example_file, test_file):
+    examples, labels, test_samples, y_test = process_data(example_file, test_file)
     embedding_model = AutoModel.from_pretrained('jinaai/jina-embeddings-v2-base-en', trust_remote_code=True)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
     emb_model = emb_model.to(device)
@@ -194,7 +199,8 @@ def main(large, num_gpus, zeroshot):
     sampling_params = SamplingParams(temperature=0, max_tokens=2, logprobs=10)
     model_evaluator = ModelEvaluator(vector_db, examples, test_samples, llm, sampling_params, labels, zeroshot)
     model_evaluator.evaluate()
-    model_evaluator.compute_metrics(y_test)
+    acc, prec, rec, f1, auc = model_evaluator.compute_metrics(y_test)
+    print(f"Accuracy: {acc}; Precision: {prec}, Recall: {rec}; F1 score: {f1}; auc: {auc}")
 
 
 if __name__ == "__main__":
@@ -202,5 +208,7 @@ if __name__ == "__main__":
     parser.add_argument('--large', type=bool, default=False, help='Use large model if set to True, else use small model')
     parser.add_argument('--num_gpus', type=int, default=1, help='Number of GPUs to use for tensor parallelism')
     parser.add_argument('--zero-shot', type=bool, default=False, help='Use zero-shot prompts, default is dynamic prompting')
+    parser.add_argument('--examples', dest="example_file", required=True, help="CSV file containing 2 columns: note text and ground truth label")
+    parser.add_argument('--test_data', dest="test_file", required=True, help="CSV file containing 2 columns: unseen note text and ground truth label")
     args = parser.parse_args()
     main(args.large, args.num_gpus)
