@@ -53,8 +53,8 @@ class TextEmbedder:
 
 
 class ModelEvaluator:
-    def __init__(self, vector_db, examples, test_samples, llm, sampling_params, labels, zeroshot):
-        self.knn = NearestNeighbors(n_neighbors=2, metric='cosine')
+    def __init__(self, vector_db, examples, test_samples, llm, sampling_params, labels, zeroshot, summary):
+        self.knn = NearestNeighbors(n_neighbors=5, metric='cosine')
         self.knn.fit(vector_db)
         self.examples = examples
         self.test_samples = test_samples
@@ -66,20 +66,35 @@ class ModelEvaluator:
         self.neg_token_id = 85165
         self.labels = labels
         self.zeroshot = zeroshot
+        self.summary = summary
     
     def create_prompt(self, sample, context=True):
-        resp = 'POSITIVE' if self.labels[sample] == 1 else 'NEGATIVE'
-        text_prompt = '''<|start_header_id|>user<|end_header_id|>You are an oncologist specializing in glioma at a major cancer hospital. Your task is to predict the 14-month survival outlook for a glioma patient
-            based on the following clinical note summary, which represents the patient's status at 0.5 years (6 months) post-diagnosis.\n\nHere is the clinical summary: '''
-        if context:
-            text_prompt += str(self.examples[sample])
+        if self.summary:
+            resp = 'POSITIVE' if self.labels[sample] == 1 else 'NEGATIVE'
+            text_prompt = '''<|start_header_id|>user<|end_header_id|>You are an oncologist specializing in glioma at a major cancer hospital. Your task is to predict the 14-month survival outlook for a glioma patient
+                based on the following clinical note summary, which represents the patient's status at 0.5 years (6 months) post-diagnosis.\n\nHere is the clinical summary: '''
+            if context:
+                text_prompt += str(self.examples[sample])
+            else:
+                text_prompt += str(self.test_samples[sample])
+            text_prompt += '''\nPlease analyze this clinical note summary carefully. Based on this analysis as well as the knowledge from the examples, classify the patient's 14 month survival outlook. Respond with 1 word, either 'POSITIVE' (if the patient is likely to survive beyond 14 months) or 'NEGATIVE' (if the patient is unlikely to survive beyond 14 months).'''
+            text_prompt += "<|eot_id|><|start_header_id|>assistant<|end_header_id|>ANSWER: "
+            if context:
+                text_prompt += resp + ".<|eot_id|>\n"
+            return text_prompt
         else:
-            text_prompt += str(self.test_samples[sample])
-        text_prompt += '''\nPlease analyze this clinical note summary carefully. Based on this analysis as well as the knowledge from the examples, classify the patient's 14 month survival outlook. Respond with 1 word, either 'POSITIVE' (if the patient is likely to survive beyond 14 months) or 'NEGATIVE' (if the patient is unlikely to survive beyond 14 months).'''
-        text_prompt += "<|eot_id|><|start_header_id|>assistant<|end_header_id|>ANSWER: "
-        if context:
-            text_prompt += resp + ".<|eot_id|>\n"
-        return text_prompt
+            resp = 'POSITIVE' if self.labels[sample] == 1 else 'NEGATIVE'
+            text_prompt = '''<|start_header_id|>user<|end_header_id|>You are an oncologist specializing in glioma at a major cancer hospital. Your task is to predict the 14-month survival outlook for a glioma patient
+                based on the following clinical notes, which represent the patient's status at 0.5 years (6 months) post-diagnosis.\n\nHere are the clinical notes: '''
+            if context:
+                text_prompt += str(self.examples[sample])
+            else:
+                text_prompt += str(self.test_samples[sample])
+            text_prompt += '''\nPlease analyze these clinical notes carefully. Based on this analysis as well as the knowledge from the examples, classify the patient's 14 month survival outlook. Respond with 1 word, either 'POSITIVE' (if the patient is likely to survive beyond 14 months) or 'NEGATIVE' (if the patient is unlikely to survive beyond 14 months).'''
+            text_prompt += "<|eot_id|><|start_header_id|>assistant<|end_header_id|>ANSWER: "
+            if context:
+                text_prompt += resp + ".<|eot_id|>\n"
+            return text_prompt
 
     def evaluate(self):
         for i, note in enumerate(self.test_samples):
@@ -92,7 +107,14 @@ class ModelEvaluator:
 
                 text_prompt = self.create_prompt(sample0)
                 text_prompt += self.create_prompt(sample1)
-            text_prompt += self.create_prompt(i)
+                if self.summary:
+                    sample4 = top[1][0][4]
+                    sample3 = top[1][0][3]
+                    sample2 = top[1][0][2]
+                    text_prompt += self.create_prompt(sample2)
+                    text_prompt += self.create_prompt(sample3)
+                    text_prompt += self.create_prompt(sample4)
+            text_prompt += self.create_prompt(i, context=False)
 
             torch.cuda.empty_cache()
             output = self.llm.generate(text_prompt, self.sampling_params)
@@ -172,21 +194,25 @@ class ModelEvaluator:
 def softmax_func(logits):
     return softmax(logits)
 
-def process_data(example_file, test_file):
+def process_data(example_file, test_file, summary):
     df = pd.read_csv(example_file)
     df2 = pd.read_csv(test_file)
-    examples = df.iloc[:, 0]
-    labels = df.iloc[:, 1]
-    test_samples = df2.iloc[:, 0]
-    y_test = df2.iloc[:, 1]
+    if summary:
+        examples = df['summary']
+        test_samples = df2['summary']
+    else:
+        examples = df['note']
+        test_samples = df2['note']
+    labels = df['label']
+    y_test = df2['label']
     return examples, labels, test_samples, y_test
 
 
 def visualize_metrics():
     pass
 
-def main(large, num_gpus, zeroshot, example_file, test_file):
-    examples, labels, test_samples, y_test = process_data(example_file, test_file)
+def main(large, num_gpus, zeroshot, example_file, test_file, summary):
+    examples, labels, test_samples, y_test = process_data(example_file, test_file, summary)
     embedding_model = AutoModel.from_pretrained('jinaai/jina-embeddings-v2-base-en', trust_remote_code=True)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
     emb_model = emb_model.to(device)
@@ -197,7 +223,7 @@ def main(large, num_gpus, zeroshot, example_file, test_file):
     else:
         llm = LLM("gradientai/Llama-3-8B-Instruct-262k", tensor_parallel_size=num_gpus)
     sampling_params = SamplingParams(temperature=0, max_tokens=2, logprobs=10)
-    model_evaluator = ModelEvaluator(vector_db, examples, test_samples, llm, sampling_params, labels, zeroshot)
+    model_evaluator = ModelEvaluator(vector_db, examples, test_samples, llm, sampling_params, labels, zeroshot, summary)
     model_evaluator.evaluate()
     acc, prec, rec, f1, auc = model_evaluator.compute_metrics(y_test)
     print(f"Accuracy: {acc}; Precision: {prec}, Recall: {rec}; F1 score: {f1}; auc: {auc}")
@@ -207,8 +233,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--large', type=bool, default=False, help='Use large model if set to True, else use small model')
     parser.add_argument('--num_gpus', type=int, default=1, help='Number of GPUs to use for tensor parallelism')
-    parser.add_argument('--zero-shot', type=bool, default=False, help='Use zero-shot prompts, default is dynamic prompting')
-    parser.add_argument('--examples', dest="example_file", required=True, help="CSV file containing 2 columns: note text and ground truth label")
-    parser.add_argument('--test_data', dest="test_file", required=True, help="CSV file containing 2 columns: unseen note text and ground truth label")
+    parser.add_argument('--zero_shot', type=bool, default=False, help='Use zero-shot prompts, default is dynamic prompting')
+    parser.add_argument('--examples', dest="example_file", required=True, help="CSV file containing a label column and either note or summary column")
+    parser.add_argument('--test_data', dest="test_file", required=True, help="CSV file containing a label column and either note or summary column")
+    parser.add_argument('--summary', default=True, help="Using summarized note text.")
     args = parser.parse_args()
-    main(args.large, args.num_gpus)
+    main(args.large, args.num_gpus, args.zero_shot, args.examples, args.test_data, args.summary)
