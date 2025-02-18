@@ -22,10 +22,12 @@ warnings.filterwarnings("ignore")
 
 
 class TextEmbedder:
+    """"""
     def __init__(self, embedding_model):
         self.embedding_model = embedding_model
 
     def chunk_text(self, text, max_tokens):
+        """"""
         chunks = []
         words = text.split()
         for i in range(0, len(words), max_tokens):
@@ -34,12 +36,14 @@ class TextEmbedder:
         return chunks
 
     def average_embeddings(self, embeddings):
+        """"""
         if embeddings:
             return sum(embeddings) / len(embeddings)
         else:
             return None
 
     def generate_embeddings(self, sample, max_tokens=8000):
+        """"""
         chunks = self.chunk_text(sample, max_tokens)
         chunk_embeddings = []
         for chunk in chunks:
@@ -48,11 +52,13 @@ class TextEmbedder:
         return self.average_embeddings(chunk_embeddings)
 
     def create_vector_db(self, examples):
+        """"""
         db = [self.generate_embeddings(example) for example in examples]
         return db
 
 
 class ModelEvaluator:
+    """"""
     def __init__(self, vector_db, examples, test_samples, llm, sampling_params, labels, zeroshot, summary):
         self.knn = NearestNeighbors(n_neighbors=5, metric='cosine')
         self.knn.fit(vector_db)
@@ -69,6 +75,7 @@ class ModelEvaluator:
         self.summary = summary
     
     def create_prompt(self, sample, context=True):
+        """"""
         if self.summary:
             resp = 'POSITIVE' if self.labels[sample] == 1 else 'NEGATIVE'
             text_prompt = '''<|start_header_id|>user<|end_header_id|>You are an oncologist specializing in glioma at a major cancer hospital. Your task is to predict the 14-month survival outlook for a glioma patient
@@ -97,6 +104,7 @@ class ModelEvaluator:
             return text_prompt
 
     def evaluate(self):
+        """"""
         for i, note in enumerate(self.test_samples):
             if not self.zeroshot:
                 embedder = TextEmbedder()
@@ -137,6 +145,7 @@ class ModelEvaluator:
         return self.results
 
     def compute_metrics(self, y_test):
+        """"""
         preds = []
         df_test = pd.DataFrame()
         df_test['label'] = y_test
@@ -195,6 +204,7 @@ def softmax_func(logits):
     return softmax(logits)
 
 def process_data(example_file, test_file, summary):
+    """"""
     df = pd.read_csv(example_file)
     df2 = pd.read_csv(test_file)
     if summary:
@@ -236,6 +246,6 @@ if __name__ == "__main__":
     parser.add_argument('--zero_shot', type=bool, default=False, help='Use zero-shot prompts, default is dynamic prompting')
     parser.add_argument('--examples', dest="example_file", required=True, help="CSV file containing a label column and either note or summary column")
     parser.add_argument('--test_data', dest="test_file", required=True, help="CSV file containing a label column and either note or summary column")
-    parser.add_argument('--summary', default=True, help="Using summarized note text.")
+    parser.add_argument('--summary', type=bool, default=True, help="Using summarized note text.")
     args = parser.parse_args()
     main(args.large, args.num_gpus, args.zero_shot, args.examples, args.test_data, args.summary)
