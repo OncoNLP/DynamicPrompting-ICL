@@ -1,9 +1,12 @@
 # Dynamic Prompting Pipeline
 
-<div style="text-align: center;">
-  <img src="../images/Dynamic prompting_workflow.drawio.png" width="600" alt="Dynamic Prompting Workflow" style="display: block; margin: auto;">
-  <p><em>Workflow showcasing the adaptability of the pipeline across zero-shot, few-shot with dynamic prompting, and summarization-enhanced setups for survival prediction using EHR notes.</em></p>
-</div>
+<p align="center">
+  <img src="../images/Dynamic prompting_workflow.drawio.png" width="600" alt="Dynamic Prompting Workflow">
+</p>
+<p align="center">
+  <em>Workflow showcasing the adaptability of the pipeline across zero-shot, few-shot with dynamic prompting, and summarization-enhanced setups for survival prediction using EHR notes.</em>
+</p>
+
 
 # Prerequisites
 - **Operating System**:  
