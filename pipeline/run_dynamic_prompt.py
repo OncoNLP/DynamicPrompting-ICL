@@ -194,7 +194,8 @@ def softmax_func(logits):
     return softmax(logits)
 
 
-def process_data(example_file, test_file, summary):
+def ingest_data(example_file, test_file, summary):
+    """"""
     df = pd.read_csv(example_file)
     df2 = pd.read_csv(test_file)
     if summary:
@@ -205,22 +206,53 @@ def process_data(example_file, test_file, summary):
         test_samples = df2['note']
     labels = df['label']
     y_test = df2['label']
+    examples = [glioma_preprocess(x) for x in examples]
+    test_samples = [glioma_preprocess(x) for x in test_samples]
     return examples, labels, test_samples, y_test
 
+def glioma_preprocess(text):
+    split_on_b = re.split(r"b'|B'|b\"|B\"", text)
+    # 1. Remove duplicated text
+    duplicates_removed = list(OrderedDict.fromkeys(split_on_b))
+    # 2. Strip
+    strip = [item.strip().rstrip("'") for item in duplicates_removed]
+    # 3. Replace Stars and slashes - deidentification
+    replace_stars = [re.sub(r'[*\\/]+', '', item) for item in strip]
+    # 4. Replace special characters
+    replace_special = [re.sub('--|__|==', '', item) for item in replace_stars]
+    replace_special = [re.sub(r'\([^a-zA-Z0-9]*\)', '', item) for item in replace_special]
+    replace_special = [re.sub(r' +', ' ', item) for item in replace_special]
+    replace_special = [re.sub(r'([.,\s-]){4,}', '', item) for item in replace_special]
+    # 4. Remove redundant words and characters
+    redundancy = [re.sub(r'DOB:|REFERRING PHYSICIAN:|Date:|name:|date of birth:|TEL:|FAX:|MRN:|DATE OF PROCEDURE:|NA|Referring No|No address on file|DATE OF SERVICE:|Fellow:|OPERATIVE REPORTDATE OF OPERATION:|Patient Rec.#|DIRECTOR|DATE OF OPERATION:|PATIENTRECORD #:|Admission date:|discharge date:|Patient Rec.#:', '', 
+                        item, flags=re.IGNORECASE) for item in replace_special]
+    redundancy = [item.strip() for item in redundancy]
+    redundancy = [re.sub(r'([.,\s-]){4,}', '', item) for item in redundancy]
+    redundancy = [re.sub(r'^[^\w]*', '', item) for item in redundancy]
+    redundancy = [re.sub(r'DOB:|REFERRING PHYSICIAN:|Date:|name:|date of birth:|TEL:|FAX:|MRN:|DATE OF PROCEDURE:|NA|Referring No|No address on file|DATE OF SERVICE:|Fellow:|OPERATIVE REPORTDATE OF OPERATION:|Patient Rec.#|DIRECTOR|DATE OF OPERATION:|PATIENTRECORD #:|Admission date:|discharge date:|Patient Rec.#:', '', 
+                        item, flags=re.IGNORECASE) for item in redundancy]
+    redundancy = [re.sub(re.escape("This laboratory is certified under the Clinical Laboratory Improvement Amendments of 1988 (\"CLIA\") as qualified to perform high-complexity clinical testing"), " ", item, flags=re.IGNORECASE)
+              for item in redundancy]
+    redundancy = [item.strip() for item in redundancy]
+    redundancy = [re.sub(r'([.,\s-]){4,}', '', item) for item in redundancy]
+    redundancy = [re.sub(r'^[^\w]*', '', item) for item in redundancy]
+    redundancy = [item.replace('Dr.', 'Doctor') for item in redundancy]
+    preprocessed_data = " ".join(redundancy)
+    preprocessed_data = preprocessed_data.strip()
+    return preprocessed_data
 
 def visualize_metrics():
     pass
 
-
 def main(large, num_gpus, zeroshot, example_file, test_file, summary):
-    examples, labels, test_samples, y_test = process_data(example_file, test_file, summary)
+    examples, labels, test_samples, y_test = ingest_data(example_file, test_file, summary)
     embedding_model = AutoModel.from_pretrained('jinaai/jina-embeddings-v2-base-en', trust_remote_code=True)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
-    embedding_model = embedding_model.to(device)
+    emb_model = emb_model.to(device)
     text_embedder = TextEmbedder(embedding_model)
     vector_db = text_embedder.create_vector_db(examples)
     if large:
-        llm = LLM(model="gradientai/Llama-3-70B-Instruct-Gradient-262k", tensor_parallel_size=num_gpus, gpu_memory_utilization=0.95)
+        llm = LLM(model = "gradientai/Llama-3-70B-Instruct-Gradient-262k", tensor_parallel_size=num_gpus, gpu_memory_utilization=0.95)
     else:
         llm = LLM("gradientai/Llama-3-8B-Instruct-262k", tensor_parallel_size=num_gpus)
     sampling_params = SamplingParams(temperature=0, max_tokens=2, logprobs=10)
@@ -228,6 +260,7 @@ def main(large, num_gpus, zeroshot, example_file, test_file, summary):
     model_evaluator.evaluate()
     acc, prec, rec, f1, auc = model_evaluator.compute_metrics(y_test)
     print(f"Accuracy: {acc}; Precision: {prec}, Recall: {rec}; F1 score: {f1}; auc: {auc}")
+
 
 
 if __name__ == "__main__":
