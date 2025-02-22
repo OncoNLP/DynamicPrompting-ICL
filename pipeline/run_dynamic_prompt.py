@@ -1,6 +1,5 @@
 import os
 os.environ['VLLM_WORKER_MULTIPROC_METHOD']='spawn'
-os.environ[]
 import gc
 import re
 import json
