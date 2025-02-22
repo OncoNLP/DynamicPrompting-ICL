@@ -1,5 +1,6 @@
 import os
 os.environ['VLLM_WORKER_MULTIPROC_METHOD']='spawn'
+os.environ[]
 import gc
 import re
 import json
@@ -151,6 +152,7 @@ class ModelEvaluator:
         return self.results
 
     def compute_metrics(self, y_test):
+        """Retrieve classification metrics for generated responses."""
         preds = []
         df_test = pd.DataFrame()
         df_test['label'] = y_test
@@ -256,9 +258,6 @@ def glioma_preprocess(text):
     preprocessed_data = " ".join(redundancy)
     preprocessed_data = preprocessed_data.strip()
     return preprocessed_data
-
-def visualize_metrics():
-    pass
 
 def main(large, num_gpus, zeroshot, example_file, test_file, summary):
     examples, labels, test_samples, y_test = ingest_data(example_file, test_file, summary)
