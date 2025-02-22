@@ -1,4 +1,5 @@
 import os
+os.environ['VLLM_WORKER_MULTIPROC_METHOD']='spawn'
 import gc
 import re
 import json
@@ -22,10 +23,14 @@ warnings.filterwarnings("ignore")
 
 
 class TextEmbedder:
+    """Create a text embedder object.
+    Attributes: Embedding Model
+    """
     def __init__(self, embedding_model):
         self.embedding_model = embedding_model
 
     def chunk_text(self, text, max_tokens):
+        """Split input text into a list of text chunks."""
         chunks = []
         words = text.split()
         for i in range(0, len(words), max_tokens):
@@ -34,12 +39,14 @@ class TextEmbedder:
         return chunks
 
     def average_embeddings(self, embeddings):
+        """Average a list of embeddings."""
         if embeddings:
             return sum(embeddings) / len(embeddings)
         else:
             return None
 
     def generate_embeddings(self, sample, max_tokens=8000):
+        """Takes in a large text, and outputs an embedding representing the entire text."""
         chunks = self.chunk_text(sample, max_tokens)
         chunk_embeddings = []
         for chunk in chunks:
@@ -48,11 +55,13 @@ class TextEmbedder:
         return self.average_embeddings(chunk_embeddings)
 
     def create_vector_db(self, examples):
+        """From a list of test, create a vector database of embeddings."""
         db = [self.generate_embeddings(example) for example in examples]
         return db
 
 
 class ModelEvaluator:
+    """"""
     def __init__(self, vector_db, examples, test_samples, llm, sampling_params, labels, zeroshot, summary):
         self.knn = NearestNeighbors(n_neighbors=5, metric='cosine')
         self.knn.fit(vector_db)
@@ -69,6 +78,7 @@ class ModelEvaluator:
         self.summary = summary
 
     def create_prompt(self, sample, context=True):
+        """"""
         if self.summary:
             resp = 'POSITIVE' if self.labels[sample] == 1 else 'NEGATIVE'
             text_prompt = '''<|start_header_id|>user<|end_header_id|>You are an oncologist specializing in glioma at a major cancer hospital. Your task is to predict the 14-month survival outlook for a glioma patient
@@ -96,7 +106,11 @@ class ModelEvaluator:
                 text_prompt += resp + ".<|eot_id|>\n"
             return text_prompt
 
-    def evaluate(self):
+    def generate_output(self):
+        """
+        Run the LLM and extract the binary output. If dynamic prompting is enabled, extract the most similar examples
+        from the vector database and add those as context to the prompt.
+        """
         for i, note in enumerate(self.test_samples):
             if not self.zeroshot:
                 embedder = TextEmbedder()
@@ -195,7 +209,7 @@ def softmax_func(logits):
 
 
 def ingest_data(example_file, test_file, summary):
-    """"""
+    """Reads csv files and outputs 4 lists representing the samples and labels for training and testing sets respectively."""
     df = pd.read_csv(example_file)
     df2 = pd.read_csv(test_file)
     if summary:
@@ -211,6 +225,8 @@ def ingest_data(example_file, test_file, summary):
     return examples, labels, test_samples, y_test
 
 def glioma_preprocess(text):
+    """Preprocessing function built specifically for UCSF glioma dataset.
+    Takes in a string and outputs a preprocessed string."""
     split_on_b = re.split(r"b'|B'|b\"|B\"", text)
     # 1. Remove duplicated text
     duplicates_removed = list(OrderedDict.fromkeys(split_on_b))
@@ -246,20 +262,21 @@ def visualize_metrics():
 
 def main(large, num_gpus, zeroshot, example_file, test_file, summary):
     examples, labels, test_samples, y_test = ingest_data(example_file, test_file, summary)
-    embedding_model = AutoModel.from_pretrained('jinaai/jina-embeddings-v2-base-en', trust_remote_code=True)
+    embedding_model = AutoModel.from_pretrained('jinaai/jina-embeddings-v2-base-en', trust_remote_code=True) # initialize embedding model from HuggingFace
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
-    emb_model = emb_model.to(device)
+    embedding_model = embedding_model.to(device)
     text_embedder = TextEmbedder(embedding_model)
     vector_db = text_embedder.create_vector_db(examples)
+    # tensor parallel to deal with longer context VRAM issues
     if large:
         llm = LLM(model = "gradientai/Llama-3-70B-Instruct-Gradient-262k", tensor_parallel_size=num_gpus, gpu_memory_utilization=0.95)
     else:
-        llm = LLM("gradientai/Llama-3-8B-Instruct-262k", tensor_parallel_size=num_gpus)
-    sampling_params = SamplingParams(temperature=0, max_tokens=2, logprobs=10)
+        llm = LLM("gradientai/Llama-3-8B-Instruct-262k", tensor_parallel_size=num_gpus, gpu_memory_utilization=0.95) # default is to load smaller model
+    sampling_params = SamplingParams(temperature=0, max_tokens=2, logprobs=10) # set temperature to 0 for repeatable results
     model_evaluator = ModelEvaluator(vector_db, examples, test_samples, llm, sampling_params, labels, zeroshot, summary)
     model_evaluator.evaluate()
-    acc, prec, rec, f1, auc = model_evaluator.compute_metrics(y_test)
-    print(f"Accuracy: {acc}; Precision: {prec}, Recall: {rec}; F1 score: {f1}; auc: {auc}")
+    acc, prec, rec, f1, auc = model_evaluator.compute_metrics(y_test) # retrieve classification metrics
+    print(f"Accuracy: {acc}; Precision: {prec}, Recall: {rec}; F1 score: {f1}; AUC: {auc}")
 
 
 
