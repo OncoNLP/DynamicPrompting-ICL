@@ -62,7 +62,7 @@ class TextEmbedder:
 
 class ModelEvaluator:
     """"""
-    def __init__(self, vector_db, examples, test_samples, llm, sampling_params, labels, zeroshot, summary):
+    def __init__(self, vector_db, examples, test_samples, llm, sampling_params, labels, zeroshot, summary, embedder):
         self.knn = NearestNeighbors(n_neighbors=5, metric='cosine')
         self.knn.fit(vector_db)
         self.examples = examples
@@ -76,6 +76,7 @@ class ModelEvaluator:
         self.labels = labels
         self.zeroshot = zeroshot
         self.summary = summary
+        self.embedder = embedder
 
     def create_prompt(self, sample, context=True):
         """"""
@@ -113,8 +114,7 @@ class ModelEvaluator:
         """
         for i, note in enumerate(self.test_samples):
             if not self.zeroshot:
-                embedder = TextEmbedder()
-                embedding = embedder.generate_embeddings(note)
+                embedding = self.embedder.generate_embeddings(note)
                 top = self.knn.kneighbors(embedding.reshape(1, -1))
                 sample1 = top[1][0][1]
                 sample0 = top[1][0][0]
@@ -128,7 +128,9 @@ class ModelEvaluator:
                     text_prompt += self.create_prompt(sample2)
                     text_prompt += self.create_prompt(sample3)
                     text_prompt += self.create_prompt(sample4)
-            text_prompt += self.create_prompt(i, context=False)
+                text_prompt += self.create_prompt(i, context=False)
+            else:
+                text_prompt = self.create_prompt(i, context=False)
 
             torch.cuda.empty_cache()
             output = self.llm.generate(text_prompt, self.sampling_params)
@@ -209,10 +211,11 @@ def softmax_func(logits):
     return softmax(logits)
 
 
-def ingest_data(example_file, test_file, summary):
+def ingest_data(example_file, test_file, summary, dataframe):
     """Reads csv files and outputs 4 lists representing the samples and labels for training and testing sets respectively."""
-    df = pd.read_csv(example_file)
-    df2 = pd.read_csv(test_file)
+    if not dataframe:
+        df = pd.read_csv(example_file)
+        df2 = pd.read_csv(test_file)
     if summary:
         examples = df['summary']
         test_samples = df2['summary']
@@ -258,23 +261,69 @@ def glioma_preprocess(text):
     preprocessed_data = preprocessed_data.strip()
     return preprocessed_data
 
-def main(large, num_gpus, zeroshot, example_file, test_file, summary):
-    examples, labels, test_samples, y_test = ingest_data(example_file, test_file, summary)
+def main(large, num_gpus, zeroshot, example_file, test_file, summary, dataframe):
+    print("Starting script execution...")
+    print("")
+
+    print("Processing data...")
+    examples, labels, test_samples, y_test = ingest_data(example_file, test_file, summary, dataframe)
+    print(f"Loaded {len(examples)} examples and {len(test_samples)} test samples.")
+    print("")
+
+    print("Loading embedding model...")
     embedding_model = AutoModel.from_pretrained('jinaai/jina-embeddings-v2-base-en', trust_remote_code=True) # initialize embedding model from HuggingFace
+
+    print("")
+
+    print("Creating vector database...")
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
     embedding_model = embedding_model.to(device)
     text_embedder = TextEmbedder(embedding_model)
     vector_db = text_embedder.create_vector_db(examples)
+    print("Vector database created successfully.")
+    print("")
+
+    print("Initializing LLM...")
     # tensor parallel to deal with longer context VRAM issues
     if large:
-        llm = LLM(model = "gradientai/Llama-3-70B-Instruct-Gradient-262k", tensor_parallel_size=num_gpus, gpu_memory_utilization=0.95)
+        model_name = "gradientai/Llama-3-70B-Instruct-Gradient-262k"
+        llm = LLM(model=model_name, tensor_parallel_size=num_gpus, gpu_memory_utilization=0.95)
     else:
-        llm = LLM("gradientai/Llama-3-8B-Instruct-262k", tensor_parallel_size=num_gpus, gpu_memory_utilization=0.95) # default is to load smaller model
+        model_name = "gradientai/Llama-3-8B-Instruct-262k"
+        llm = LLM(model=model_name, tensor_parallel_size=num_gpus, gpu_memory_utilization=0.8) # default is to load smaller model
+    print(f"Loaded LLM model: {model_name}")
+    print("")
     sampling_params = SamplingParams(temperature=0, max_tokens=2, logprobs=10) # set temperature to 0 for repeatable results
-    model_evaluator = ModelEvaluator(vector_db, examples, test_samples, llm, sampling_params, labels, zeroshot, summary)
-    model_evaluator.evaluate()
-    acc, prec, rec, f1, auc = model_evaluator.compute_metrics(y_test) # retrieve classification metrics
-    print(f"Accuracy: {acc}; Precision: {prec}, Recall: {rec}; F1 score: {f1}; AUC: {auc}")
+    model_evaluator = ModelEvaluator(vector_db, examples, test_samples, llm, sampling_params, labels, zeroshot, summary, text_embedder)
+    print("Starting inference...")
+    model_evaluator.generate_output()
+    print("Inference complete.")
+    print("Computing evaluation metrics...")
+    acc, prec, rec, f1, auc = model_evaluator.compute_metrics(y_test)
+    print("Evaluation complete. Metrics:")
+    print(f"  - Accuracy: {acc:.4f}")
+    print(f"  - Precision: {prec:.4f}")
+    print(f"  - Recall: {rec:.4f}")
+    print(f"  - F1 Score: {f1:.4f}")
+    print(f"  - AUC: {auc:.4f}")
+    print("")
+
+    file_path = f"evaluation_metrics.txt"
+
+    # Open the file in write mode
+    with open(file_path, "w") as f:
+        # Write the evaluation metrics to the file
+        f.write("Evaluation complete. Metrics:\n")
+        f.write(f"  - Accuracy: {acc:.4f}\n")
+        f.write(f"  - Precision: {prec:.4f}\n")
+        f.write(f"  - Recall: {rec:.4f}\n")
+        f.write(f"  - F1 Score: {f1:.4f}\n")
+        f.write(f"  - AUC: {auc:.4f}\n")
+        f.write("\n")
+
+    print(f"Metrics saved to {file_path}")
+
+    print("Script execution finished successfully.")
 
 
 
@@ -286,5 +335,7 @@ if __name__ == "__main__":
     parser.add_argument('--examples', required=True, help="CSV file containing a label column and either note or summary column")
     parser.add_argument('--test_data', required=True, help="CSV file containing a label column and either note or summary column")
     parser.add_argument('--summary', type=lambda x: (str(x).lower() == 'true'), default=True, help="Using summarized note text.")
+    parser.add_argument('--dataframe', type=lambda x: (str(x).lower() == 'true'), default=False, help="Input is in dataframe format already")
+
     args = parser.parse_args()
-    main(args.large, args.num_gpus, args.zero_shot, args.examples, args.test_data, args.summary)
+    main(args.large, args.num_gpus, args.zero_shot, args.examples, args.test_data, args.summary, args.dataframe)
