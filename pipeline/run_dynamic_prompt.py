@@ -1,5 +1,4 @@
 import os
-os.environ['VLLM_WORKER_MULTIPROC_METHOD']='spawn'
 import gc
 import re
 import json
@@ -9,6 +8,7 @@ import string
 import argparse
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 from scipy.special import softmax
 from collections import OrderedDict
 from vllm import LLM, SamplingParams
@@ -21,16 +21,33 @@ from sklearn.metrics import accuracy_score, roc_auc_score, precision_score, reca
 import warnings
 warnings.filterwarnings("ignore")
 
+os.environ['VLLM_WORKER_MULTIPROC_METHOD']='spawn'
 
+# ---------------------------------------------------------------------------
+# TEXT EMBEDDING
+# ---------------------------------------------------------------------------
 class TextEmbedder:
-    """Create a text embedder object.
-    Attributes: Embedding Model
+    """
+    A class for embedding large text documents using a specified embedding model.
+
+    Attributes:
+        embedding_model: The embedding model used for generating text embeddings.
     """
     def __init__(self, embedding_model):
         self.embedding_model = embedding_model
 
     def chunk_text(self, text, max_tokens):
-        """Split input text into a list of text chunks."""
+        """
+        Splits the input text into smaller chunks, ensuring each chunk 
+        does not exceed the specified token limit.
+
+        Args:
+            text (str): The input text to be chunked.
+            max_tokens (int): The maximum number of tokens per chunk.
+
+        Returns:
+            list: A list of text chunks.
+        """
         chunks = []
         words = text.split()
         for i in range(0, len(words), max_tokens):
@@ -39,14 +56,34 @@ class TextEmbedder:
         return chunks
 
     def average_embeddings(self, embeddings):
-        """Average a list of embeddings."""
+        """
+        Computes the average of a list of embeddings.
+
+        Args:
+            embeddings (list): A list of numerical embeddings.
+
+        Returns:
+            The averaged embedding vector, or None if the list is empty.
+        """
         if embeddings:
             return sum(embeddings) / len(embeddings)
         else:
             return None
 
     def generate_embeddings(self, sample, max_tokens=8000):
-        """Takes in a large text, and outputs an embedding representing the entire text."""
+        """
+        Generates an embedding for a large text sample by:
+        1. Splitting it into smaller chunks.
+        2. Generating embeddings for each chunk.
+        3. Averaging the embeddings to obtain a final representation.
+
+        Args:
+            sample (str): The input text to be embedded.
+            max_tokens (int, optional): The max token size for each chunk. Defaults to 8000.
+
+        Returns:
+            The averaged embedding vector representing the entire text.
+        """
         chunks = self.chunk_text(sample, max_tokens)
         chunk_embeddings = []
         for chunk in chunks:
@@ -55,13 +92,41 @@ class TextEmbedder:
         return self.average_embeddings(chunk_embeddings)
 
     def create_vector_db(self, examples):
-        """From a list of test, create a vector database of embeddings."""
+        """
+        Creates a vector database by generating embeddings for a list of text examples.
+
+        Args:
+            examples (list): A list of text samples to be embedded.
+
+        Returns:
+            list: A list of embedding vectors representing the text examples.
+        """
         db = [self.generate_embeddings(example) for example in examples]
         return db
 
-
+# ---------------------------------------------------------------------------
+# MODEL EVALUATION
+# ---------------------------------------------------------------------------
 class ModelEvaluator:
-    """"""
+    """
+    A class for evaluating a model using a nearest-neighbor approach for text-based classification.
+
+    Attributes:
+        knn (NearestNeighbors): A k-Nearest Neighbors model for similarity-based retrieval.
+        examples (list): A list of example texts used for evaluation.
+        test_samples (list): A list of test samples to be evaluated.
+        llm (object): The language model used for text processing and inference.
+        sampling_params (dict): Parameters for controlling the sampling behavior of the LLM.
+        results (list): Stores evaluation results.
+        auc_data (list): Stores Area Under Curve (AUC) data for performance analysis.
+        pos_token_id (int): Token ID representing the positive class.
+        neg_token_id (int): Token ID representing the negative class.
+        labels (list): Ground-truth labels for the test samples.
+        zeroshot (bool): Indicates whether zero-shot classification is used.
+        summary (bool): Indicates whether summary-based evaluation is performed.
+        embedder (object): The embedding model used for vector representation.
+        cancer_type (str): The specific cancer type being analyzed.
+    """
     def __init__(self, vector_db, examples, test_samples, llm, sampling_params, labels, zeroshot, summary, embedder, cancer_type):
         self.knn = NearestNeighbors(n_neighbors=5, metric='cosine')
         self.knn.fit(vector_db)
@@ -79,57 +144,93 @@ class ModelEvaluator:
         self.embedder = embedder
         self.cancer_type = cancer_type
 
+    def create_prompt_shots(self, sample):
+        """
+        Generates a prompt for an oncologist to predict a cancer patient's survival outlook.
+
+        Args:
+            sample (int): The index of the example to use for prompt generation.
+
+        Returns:
+            str: A formatted text prompt for model evaluation.
+        """
+        cutoff = '14-month' if self.cancer_type == 'glioma' else '5-year'
+        cancer = 'glioma' if self.cancer_type == 'glioma' else 'breast cancer'
+
+        if self.summary:
+            ans = 'POSITIVE' if self.labels[sample] == 1 else 'NEGATIVE'
+            text_prompt = f'''<|start_header_id|>user<|end_header_id|>You are an oncologist specializing in {cancer} at a major cancer hospital. Your task is to predict the {cutoff}s survival outlook for a {cancer} patient
+                based on the following clinical summary, which represents the patient's status at 0.5 years (6 months) post-diagnosis.\n\n''' 
+            text_prompt += '''Here is a clinical summary example: \n'''
+            text_prompt += str(self.examples[sample])
+            text_prompt += f"\nFor this example, the correct answer is {ans}.\n"
+        else:
+            ans = 'POSITIVE' if self.labels[sample] == 1 else 'NEGATIVE'
+            text_prompt = f'''<|start_header_id|>user<|end_header_id|>You are an oncologist specializing in {cancer} at a major cancer hospital. Your task is to predict the {cutoff}s survival outlook for a {cancer} patient
+                based on the following clinical notes, which represents the patient's status at 0.5 years (6 months) post-diagnosis.\n\n''' 
+            text_prompt += '''Here is the clinical notes example: \n'''
+            text_prompt += str(self.examples[sample])
+            text_prompt += f"\nFor this example, the correct answer is {ans}.\n"
+
+        return text_prompt
+
     def create_prompt(self, sample, context=True):
-        """"""
+        """
+        Generates a structured prompt for an oncologist to classify a cancer patient's survival outlook.
+
+        Args:
+            sample (int): The index of the test sample to be used in the prompt.
+            context (bool): Determines whether contextual information (previous examples) is included.
+
+        Returns:
+            str: A formatted text prompt for model evaluation.
+        """
         cutoff = '14 month' if self.cancer_type == 'glioma' else '5 year'
         cancer = 'glioma' if self.cancer_type == 'glioma' else 'breast cancer'
-        if self.zeroshot:
-            text_prompt = f'''
-            You are an oncologist at a major cancer hospital, tasked with predicting
-            outcomes for patients.
-            I am going to provide you with a clinical note summary for a {cancer} patient at 6 months. Here is the summary:
-            '''
-            text_prompt += str(self.test_samples[sample])
-            text_prompt += f'''\nBased on your understanding of the clinical notes for a {cancer} patient at 6 months, classify the {cutoff}
-                survival outlook for this patient. Please respond with either POSITIVE or NEGATIVE answer only.'''
-            text_prompt += "<|eot_id|><|start_header_id|>assistant<|end_header_id|>ANSWER: "
         if self.summary:
-            resp = 'POSITIVE' if self.labels[sample] == 1 else 'NEGATIVE'
-            text_prompt = f'''<|start_header_id|>user<|end_header_id|>You are an oncologist specializing in {cancer} at a major cancer hospital. Your task is to predict the 14-month survival outlook for a {cancer} patient
-                based on the following clinical note summary, which represents the patient's status at 0.5 years (6 months) post-diagnosis.\n\nHere is the clinical summary: '''
-            if context:
-                text_prompt += str(self.examples[sample])
-            else:
+            if self.zeroshot:
+                text_prompt = f'''<|start_header_id|>user<|end_header_id|>You are an oncologist at a major cancer hospital, tasked with predicting outcomes for patients.
+                    I am going to provide you with a clinical note summary for a {cancer} patient at 0.5 years. Here is the summary: '''
                 text_prompt += str(self.test_samples[sample])
-            text_prompt += f'''\nPlease analyze this clinical summary carefully, considering factors such as tumor progression, treatment response,
-                symptoms, and any relevant biomarkers. Based on this analysis {'' if context else 'as well as the knowledge from the previous examples'}, classify the
-                patient's {cutoff} survival outlook. Respond with either 'POSITIVE' (if the patient is likely to survive beyond {cutoff}s) or 'NEGATIVE' (if
-                the patient is unlikely to survive beyond {cutoff}s).'''
-            text_prompt += "<|eot_id|><|start_header_id|>assistant<|end_header_id|>ANSWER: "
-            if context:
-                text_prompt += resp + ".<|eot_id|>\n"
-            return text_prompt
+                text_prompt += f'''\nBased on your understanding of the clinical summary for a {cancer} patient at 0.5 years, classify the {cutoff} survival outlook for this patient.
+                    Please respond with either POSITIVE or NEGATIVE'''
+                text_prompt += "<|eot_id|><|start_header_id|>assistant<|end_header_id|>The correct answer is "
+            else:
+                text_prompt = f'''<|start_header_id|>user<|end_header_id|>You are an oncologist specializing in {cancer} at a major cancer hospital. Your task is to predict the {cutoff} survival outlook for a {cancer} patient
+                    based on a clinical summary, which represents the patient's status at 0.5 years (6 months) post-diagnosis. I am going to provide you previous patient examples to help guide the decision making.\n'''
+                text_prompt += "Here is the summary:\n"
+                text_prompt += str(self.test_samples[sample])
+                text_prompt += f'''\nPlease analyze this clinical summary carefully, considering factors such as tumor progression, treatment response, symptoms, and any relevant biomarkers. Based on this analysis as well as the knowledge from the previous examples, classify the patient's {cutoff} survival outlook. Respond with either 'POSITIVE' (if the patient is likely to survive beyond {cutoff}s) or 'NEGATIVE' (if the patient is unlikely to survive beyond {cutoff}s).'''
+                text_prompt += "<|eot_id|><|start_header_id|>assistant<|end_header_id|>ANSWER: "
         else:
-            resp = 'POSITIVE' if self.labels[sample] == 1 else 'NEGATIVE'
-            text_prompt = f'''<|start_header_id|>user<|end_header_id|>You are an oncologist specializing in {cancer} at a major cancer hospital. Your task is to predict the 14-month survival outlook for a {cancer} patient
-                based on the following clinical notes, which represent the patient's status at 0.5 years (6 months) post-diagnosis.\n\nHere are the clinical notes: '''
-            if context:
-                text_prompt += str(self.examples[sample])
-            else:
+            if self.zeroshot:
+                text_prompt = f'''<|start_header_id|>user<|end_header_id|>You are an oncologist at a major cancer hospital, tasked with predicting outcomes for patients.
+                    I am going to provide you with a clinical notes for a {cancer} patient at 0.5 years. Here is the summary: '''
                 text_prompt += str(self.test_samples[sample])
-            text_prompt += f'''\nPlease analyze these clinical notes carefully, considering factors such as tumor progression, treatment response,
-                symptoms, and any relevant biomarkers. Based on this analysis {'' if context else 'as well as the knowledge from the previous examples'}, classify the
-                patient's {cutoff} survival outlook. Respond with either 'POSITIVE' (if the patient is likely to survive beyond {cutoff}s) or 'NEGATIVE' (if
-                the patient is unlikely to survive beyond {cutoff}s).'''
-            text_prompt += "<|eot_id|><|start_header_id|>assistant<|end_header_id|>ANSWER: "
-            if context:
-                text_prompt += resp + ".<|eot_id|>\n"
-            return text_prompt
+                text_prompt += f'''\nBased on your understanding of the clinical notes for a {cancer} patient at 0.5 years, classify the {cutoff} survival outlook for this patient.
+                    Please respond with either POSITIVE or NEGATIVE'''
+                text_prompt += "<|eot_id|><|start_header_id|>assistant<|end_header_id|>The correct answer is "
+            else:
+                text_prompt = f'''<|start_header_id|>user<|end_header_id|>You are an oncologist specializing in {cancer} at a major cancer hospital. Your task is to predict the {cutoff} survival outlook for a {cancer} patient
+                    based on the clinical notes, which represents the patient's status at 0.5 years (6 months) post-diagnosis. I am going to provide you previous patient examples to help guide the decision making.\n'''
+                text_prompt += "Here are the clinical notes:\n"
+                text_prompt += str(self.test_samples[sample])
+                text_prompt += f'''\nPlease analyze the clinical notes carefully, considering factors such as tumor progression, treatment response, symptoms, and any relevant biomarkers. Based on this analysis as well as the knowledge from the previous examples, classify the patient's {cutoff} survival outlook. Respond with either 'POSITIVE' (if the patient is likely to survive beyond {cutoff}s) or 'NEGATIVE' (if the patient is unlikely to survive beyond {cutoff}s).'''
+                text_prompt += "<|eot_id|><|start_header_id|>assistant<|end_header_id|>ANSWER: "
+
+        return text_prompt
 
     def generate_output(self):
         """
-        Run the LLM and extract the binary output. If dynamic prompting is enabled, extract the most similar examples
-        from the vector database and add those as context to the prompt.
+        Runs the LLM to generate predictions and extracts the binary output.
+
+        - If dynamic prompting (few-shot learning) is enabled, retrieves the most similar examples
+        from the vector database and includes them as context in the prompt.
+        - If zero-shot learning is enabled, constructs a prompt without additional examples.
+        - Executes the LLM model, captures results, and calculates log probabilities for AUC evaluation.
+
+        Returns:
+            list: A list of model-generated results.
         """
         for i, note in enumerate(self.test_samples):
             if not self.zeroshot:
@@ -138,15 +239,16 @@ class ModelEvaluator:
                 sample1 = top[1][0][1]
                 sample0 = top[1][0][0]
 
-                text_prompt = self.create_prompt(sample0)
-                text_prompt += self.create_prompt(sample1)
+                text_prompt = self.create_prompt_shots(sample0)
+                text_prompt += self.create_prompt_shots(sample1)
                 if self.summary:
                     sample4 = top[1][0][4]
                     sample3 = top[1][0][3]
                     sample2 = top[1][0][2]
-                    text_prompt += self.create_prompt(sample2)
-                    text_prompt += self.create_prompt(sample3)
-                    text_prompt += self.create_prompt(sample4)
+                    text_prompt += self.create_prompt_shots(sample2)
+                    text_prompt += self.create_prompt_shots(sample3)
+                    text_prompt += self.create_prompt_shots(sample4)
+
                 text_prompt += self.create_prompt(i, context=False)
             else:
                 text_prompt = self.create_prompt(i, context=False)
@@ -172,7 +274,15 @@ class ModelEvaluator:
         return self.results
 
     def compute_metrics(self, y_test):
-        """Retrieve classification metrics for generated responses."""
+        """
+        Computes and retrieves classification metrics for the generated model responses.
+
+        Args:
+            y_test (list or array): The true labels for the test samples.
+
+        Returns:
+            tuple: A tuple containing the classification metrics (accuracy, precision, recall, F1-score, AUC).
+        """
         preds = []
         df_test = pd.DataFrame()
         df_test['label'] = y_test
@@ -229,26 +339,58 @@ class ModelEvaluator:
 def softmax_func(logits):
     return softmax(logits)
 
-
+# ---------------------------------------------------------------------------
+# DATA PREPARATION AND PREPROCESSING
+# ---------------------------------------------------------------------------
 def ingest_data(example_file, test_file, summary):
-    """Reads csv files and outputs 4 lists representing the samples and labels for training and testing sets respectively."""
+    """
+    Reads CSV files containing clinical notes and labels, processes them, and outputs lists for training and testing data.
+
+    Args:
+        example_file (str): Path to the CSV file containing the training data (clinical notes and labels).
+        test_file (str): Path to the CSV file containing the test data (clinical notes and labels).
+        summary (bool): Flag indicating whether to process summaries (useful for controlling different types of data preprocessing).
+
+    Returns:
+        tuple: A tuple containing four elements:
+            - examples (list): Preprocessed clinical notes for training.
+            - labels (list): Labels corresponding to the training data.
+            - test_samples (list): Preprocessed clinical notes for testing.
+            - y_test (list): Labels corresponding to the test data.
+    """
     df = pd.read_csv(example_file)
     df2 = pd.read_csv(test_file)
-    if summary:
-        examples = df['summary']
-        test_samples = df2['summary']
-    else:
-        examples = df['note']
-        test_samples = df2['note']
+
+    tqdm.pandas()
+    df['note'] = df['note'].progress_apply(glioma_preprocess)
+    df2['note'] = df2['note'].progress_apply(glioma_preprocess)
+
+    examples = df['note']
+    test_samples = df2['note']
     labels = df['label']
     y_test = df2['label']
-    examples = [glioma_preprocess(x) for x in examples]
-    test_samples = [glioma_preprocess(x) for x in test_samples]
+
     return examples, labels, test_samples, y_test
 
+
 def glioma_preprocess(text):
-    """Preprocessing function built specifically for UCSF glioma dataset.
-    Takes in a string and outputs a preprocessed string."""
+    """
+    Preprocessing function built specifically for the UCSF glioma dataset.
+    Takes in a clinical note as a string and outputs a cleaned and preprocessed string.
+
+    The function performs the following preprocessing steps:
+    1. Removes duplicated text by splitting and deduplicating.
+    2. Strips unnecessary whitespaces and removes extraneous characters.
+    3. Removes stars, slashes, and other symbols for deidentification.
+    4. Replaces or removes special characters, redundant words, and specific phrases.
+    5. Normalizes the text by stripping redundant characters and words, ensuring it is clean and consistent.
+
+    Args:
+        text (str): A string representing the raw clinical note.
+
+    Returns:
+        str: A preprocessed version of the input string.
+    """
     split_on_b = re.split(r"b'|B'|b\"|B\"", text)
     # 1. Remove duplicated text
     duplicates_removed = list(OrderedDict.fromkeys(split_on_b))
@@ -279,7 +421,8 @@ def glioma_preprocess(text):
     preprocessed_data = preprocessed_data.strip()
     return preprocessed_data
 
-def main(large, num_gpus, zeroshot, example_file, test_file, summary, vec_db, cancer_type):
+
+def main(exp_type, fold_number, large, num_gpus, zeroshot, example_file, test_file, summary, vec_db, cancer_type):
     print("Starting script execution...")
     print("")
 
@@ -289,15 +432,15 @@ def main(large, num_gpus, zeroshot, example_file, test_file, summary, vec_db, ca
     print("")
 
     print("Loading embedding model...")
-    embedding_model = AutoModel.from_pretrained('jinaai/jina-embeddings-v2-base-en', trust_remote_code=True) # initialize embedding model from HuggingFace
-
+    embedding_model = AutoModel.from_pretrained('jinaai/jina-embeddings-v2-base-en', trust_remote_code=True)
+    print("Loaded embedding model successfully")
     print("")
 
     print("Creating vector database...")
-
     text_embedder = TextEmbedder(embedding_model)
     if vec_db:
-        vector_db = vec_db
+        with open(vec_db, 'rb') as f:
+            vector_db = pickle.load(f)
     else:
         vector_db = text_embedder.create_vector_db(examples)
     del embedding_model
@@ -306,7 +449,6 @@ def main(large, num_gpus, zeroshot, example_file, test_file, summary, vec_db, ca
     print("")
 
     print("Initializing LLM...")
-    # tensor parallel to deal with longer context VRAM issues
     if large:
         model_name = "gradientai/Llama-3-70B-Instruct-Gradient-262k"
         llm = LLM(model=model_name, tensor_parallel_size=num_gpus, gpu_memory_utilization=0.95)
@@ -315,11 +457,14 @@ def main(large, num_gpus, zeroshot, example_file, test_file, summary, vec_db, ca
         llm = LLM(model=model_name, tensor_parallel_size=num_gpus, gpu_memory_utilization=0.8) # default is to load smaller model
     print(f"Loaded LLM model: {model_name}")
     print("")
+
     sampling_params = SamplingParams(temperature=0, max_tokens=2, logprobs=10) # set temperature to 0 for repeatable results
     model_evaluator = ModelEvaluator(vector_db, examples, test_samples, llm, sampling_params, labels, zeroshot, summary, text_embedder, cancer_type)
+
     print("Starting inference...")
     model_evaluator.generate_output()
     print("Inference complete.")
+
     print("Computing evaluation metrics...")
     acc, prec, rec, f1, auc = model_evaluator.compute_metrics(y_test)
     print("Evaluation complete. Metrics:")
@@ -330,27 +475,36 @@ def main(large, num_gpus, zeroshot, example_file, test_file, summary, vec_db, ca
     print(f"  - AUC: {auc:.4f}")
     print("")
 
-    file_path = f"evaluation_metrics.txt"
+    file_path = "metrics.json"
+    if os.path.exists(file_path):
+        with open(file_path, "r") as f:
+            metrics_data = json.load(f)
+    else:
+        metrics_data = {}
 
-    # Open the file in write mode
+    if exp_type not in metrics_data:
+        metrics_data[exp_type] = {}
+
+    # Store metrics under the fold_number key
+    metrics_data[exp_type][fold_number] = {
+        "Accuracy": round(acc, 4),
+        "Precision": round(prec, 4),
+        "Recall": round(rec, 4),
+        "F1 Score": round(f1, 4),
+        "AUC": round(auc, 4)
+    }
+
     with open(file_path, "w") as f:
-        # Write the evaluation metrics to the file
-        f.write("Evaluation complete. Metrics:\n")
-        f.write(f"  - Accuracy: {acc:.4f}\n")
-        f.write(f"  - Precision: {prec:.4f}\n")
-        f.write(f"  - Recall: {rec:.4f}\n")
-        f.write(f"  - F1 Score: {f1:.4f}\n")
-        f.write(f"  - AUC: {auc:.4f}\n")
-        f.write("\n")
+        json.dump(metrics_data, f, indent=4)
 
     print(f"Metrics saved to {file_path}")
-
     print("Script execution finished successfully.")
-
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument('--exp_type', type=str, required=True, help='zero_shot_summary/zero_shot_fn/dynamic_summary/dynamic_fn')
+    parser.add_argument('--fold_number', type=int, default=0, help='CV Folds')
     parser.add_argument('--large', type=lambda x: (str(x).lower() == 'true'), default=False, help='Use large model if set to True, else use small model')
     parser.add_argument('--num_gpus', type=int, default=1, help='Number of GPUs to use for tensor parallelism')
     parser.add_argument('--zero_shot', type=lambda x: (str(x).lower() == 'true'), default=False, help='Use zero-shot prompts, default is dynamic prompting')
@@ -361,6 +515,4 @@ if __name__ == "__main__":
     parser.add_argument('--cancer_type', type=str, required=True, help="String representing cancer type, current options are ['glioma', 'breast cancer']")
 
     args = parser.parse_args()
-    print(args.vector_db)
-    print(args.cancer_type)
-    main(args.large, args.num_gpus, args.zero_shot, args.examples, args.test_data, args.summary, args.vector_db, args.cancer_type)
+    main(args.exp_type, args.fold_number, args.large, args.num_gpus, args.zero_shot, args.examples, args.test_data, args.summary, args.vector_db, args.cancer_type)
