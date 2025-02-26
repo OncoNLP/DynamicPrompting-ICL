@@ -62,7 +62,7 @@ class TextEmbedder:
 
 class ModelEvaluator:
     """"""
-    def __init__(self, vector_db, examples, test_samples, llm, sampling_params, labels, zeroshot, summary, embedder):
+    def __init__(self, vector_db, examples, test_samples, llm, sampling_params, labels, zeroshot, summary, embedder, cancer_type):
         self.knn = NearestNeighbors(n_neighbors=5, metric='cosine')
         self.knn.fit(vector_db)
         self.examples = examples
@@ -77,31 +77,50 @@ class ModelEvaluator:
         self.zeroshot = zeroshot
         self.summary = summary
         self.embedder = embedder
+        self.cancer_type = cancer_type
 
     def create_prompt(self, sample, context=True):
         """"""
+        cutoff = '14 month' if self.cancer_type == 'glioma' else '5 year'
+        cancer = 'glioma' if self.cancer_type == 'glioma' else 'breast cancer'
+        if self.zeroshot:
+            text_prompt = f'''
+            You are an oncologist at a major cancer hospital, tasked with predicting
+            outcomes for patients.
+            I am going to provide you with a clinical note summary for a {cancer} patient at 6 months. Here is the summary:
+            '''
+            text_prompt += str(self.test_samples[sample])
+            text_prompt += f'''\nBased on your understanding of the clinical notes for a {cancer} patient at 6 months, classify the {cutoff}
+                survival outlook for this patient. Please respond with either POSITIVE or NEGATIVE answer only.'''
+            text_prompt += "<|eot_id|><|start_header_id|>assistant<|end_header_id|>ANSWER: "
         if self.summary:
             resp = 'POSITIVE' if self.labels[sample] == 1 else 'NEGATIVE'
-            text_prompt = '''<|start_header_id|>user<|end_header_id|>You are an oncologist specializing in glioma at a major cancer hospital. Your task is to predict the 14-month survival outlook for a glioma patient
+            text_prompt = f'''<|start_header_id|>user<|end_header_id|>You are an oncologist specializing in {cancer} at a major cancer hospital. Your task is to predict the 14-month survival outlook for a {cancer} patient
                 based on the following clinical note summary, which represents the patient's status at 0.5 years (6 months) post-diagnosis.\n\nHere is the clinical summary: '''
             if context:
                 text_prompt += str(self.examples[sample])
             else:
                 text_prompt += str(self.test_samples[sample])
-            text_prompt += '''\nPlease analyze this clinical note summary carefully. Based on this analysis as well as the knowledge from the examples, classify the patient's 14 month survival outlook. Respond with 1 word, either 'POSITIVE' (if the patient is likely to survive beyond 14 months) or 'NEGATIVE' (if the patient is unlikely to survive beyond 14 months).'''
+            text_prompt += f'''\nPlease analyze this clinical summary carefully, considering factors such as tumor progression, treatment response,
+                symptoms, and any relevant biomarkers. Based on this analysis {'' if context else 'as well as the knowledge from the previous examples'}, classify the
+                patient's {cutoff} survival outlook. Respond with either 'POSITIVE' (if the patient is likely to survive beyond {cutoff}s) or 'NEGATIVE' (if
+                the patient is unlikely to survive beyond {cutoff}s).'''
             text_prompt += "<|eot_id|><|start_header_id|>assistant<|end_header_id|>ANSWER: "
             if context:
                 text_prompt += resp + ".<|eot_id|>\n"
             return text_prompt
         else:
             resp = 'POSITIVE' if self.labels[sample] == 1 else 'NEGATIVE'
-            text_prompt = '''<|start_header_id|>user<|end_header_id|>You are an oncologist specializing in glioma at a major cancer hospital. Your task is to predict the 14-month survival outlook for a glioma patient
+            text_prompt = f'''<|start_header_id|>user<|end_header_id|>You are an oncologist specializing in {cancer} at a major cancer hospital. Your task is to predict the 14-month survival outlook for a {cancer} patient
                 based on the following clinical notes, which represent the patient's status at 0.5 years (6 months) post-diagnosis.\n\nHere are the clinical notes: '''
             if context:
                 text_prompt += str(self.examples[sample])
             else:
                 text_prompt += str(self.test_samples[sample])
-            text_prompt += '''\nPlease analyze these clinical notes carefully. Based on this analysis as well as the knowledge from the examples, classify the patient's 14 month survival outlook. Respond with 1 word, either 'POSITIVE' (if the patient is likely to survive beyond 14 months) or 'NEGATIVE' (if the patient is unlikely to survive beyond 14 months).'''
+            text_prompt += f'''\nPlease analyze these clinical notes carefully, considering factors such as tumor progression, treatment response,
+                symptoms, and any relevant biomarkers. Based on this analysis {'' if context else 'as well as the knowledge from the previous examples'}, classify the
+                patient's {cutoff} survival outlook. Respond with either 'POSITIVE' (if the patient is likely to survive beyond {cutoff}s) or 'NEGATIVE' (if
+                the patient is unlikely to survive beyond {cutoff}s).'''
             text_prompt += "<|eot_id|><|start_header_id|>assistant<|end_header_id|>ANSWER: "
             if context:
                 text_prompt += resp + ".<|eot_id|>\n"
@@ -211,11 +230,10 @@ def softmax_func(logits):
     return softmax(logits)
 
 
-def ingest_data(example_file, test_file, summary, dataframe):
+def ingest_data(example_file, test_file, summary):
     """Reads csv files and outputs 4 lists representing the samples and labels for training and testing sets respectively."""
-    if not dataframe:
-        df = pd.read_csv(example_file)
-        df2 = pd.read_csv(test_file)
+    df = pd.read_csv(example_file)
+    df2 = pd.read_csv(test_file)
     if summary:
         examples = df['summary']
         test_samples = df2['summary']
@@ -261,12 +279,12 @@ def glioma_preprocess(text):
     preprocessed_data = preprocessed_data.strip()
     return preprocessed_data
 
-def main(large, num_gpus, zeroshot, example_file, test_file, summary, dataframe):
+def main(large, num_gpus, zeroshot, example_file, test_file, summary, vec_db, cancer_type):
     print("Starting script execution...")
     print("")
 
     print("Processing data...")
-    examples, labels, test_samples, y_test = ingest_data(example_file, test_file, summary, dataframe)
+    examples, labels, test_samples, y_test = ingest_data(example_file, test_file, summary)
     print(f"Loaded {len(examples)} examples and {len(test_samples)} test samples.")
     print("")
 
@@ -276,10 +294,14 @@ def main(large, num_gpus, zeroshot, example_file, test_file, summary, dataframe)
     print("")
 
     print("Creating vector database...")
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
-    embedding_model = embedding_model.to(device)
+
     text_embedder = TextEmbedder(embedding_model)
-    vector_db = text_embedder.create_vector_db(examples)
+    if vec_db:
+        vector_db = vec_db
+    else:
+        vector_db = text_embedder.create_vector_db(examples)
+    del embedding_model
+    torch.cuda.empty_cache()
     print("Vector database created successfully.")
     print("")
 
@@ -294,7 +316,7 @@ def main(large, num_gpus, zeroshot, example_file, test_file, summary, dataframe)
     print(f"Loaded LLM model: {model_name}")
     print("")
     sampling_params = SamplingParams(temperature=0, max_tokens=2, logprobs=10) # set temperature to 0 for repeatable results
-    model_evaluator = ModelEvaluator(vector_db, examples, test_samples, llm, sampling_params, labels, zeroshot, summary, text_embedder)
+    model_evaluator = ModelEvaluator(vector_db, examples, test_samples, llm, sampling_params, labels, zeroshot, summary, text_embedder, cancer_type)
     print("Starting inference...")
     model_evaluator.generate_output()
     print("Inference complete.")
@@ -335,7 +357,10 @@ if __name__ == "__main__":
     parser.add_argument('--examples', required=True, help="CSV file containing a label column and either note or summary column")
     parser.add_argument('--test_data', required=True, help="CSV file containing a label column and either note or summary column")
     parser.add_argument('--summary', type=lambda x: (str(x).lower() == 'true'), default=True, help="Using summarized note text.")
-    parser.add_argument('--dataframe', type=lambda x: (str(x).lower() == 'true'), default=False, help="Input is in dataframe format already")
+    parser.add_argument('--vector_db', default=None, help="Pickle file containing list of patient level embeddings")
+    parser.add_argument('--cancer_type', type=str, required=True, help="String representing cancer type, current options are ['glioma', 'breast cancer']")
 
     args = parser.parse_args()
-    main(args.large, args.num_gpus, args.zero_shot, args.examples, args.test_data, args.summary, args.dataframe)
+    print(args.vector_db)
+    print(args.cancer_type)
+    main(args.large, args.num_gpus, args.zero_shot, args.examples, args.test_data, args.summary, args.vector_db, args.cancer_type)
