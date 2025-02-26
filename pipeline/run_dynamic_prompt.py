@@ -187,26 +187,6 @@ class ModelEvaluator:
         """
         cutoff = '14 month' if self.cancer_type == 'glioma' else '5 year'
         cancer = 'glioma' if self.cancer_type == 'glioma' else 'breast cancer'
-        if self.zeroshot:
-            if self.summary:
-                text_prompt = f'''
-                You are an oncologist at a major cancer hospital, tasked with predicting
-                outcomes for patients.
-                I am going to provide you with a clinical note summary for a {cancer} patient at 6 months. Here is the summary:
-                '''
-                text_prompt += str(self.test_samples[sample])
-                text_prompt += f'''\nBased on your understanding of the clinical note summary for a {cancer} patient at 6 months, classify the {cutoff}
-                    survival outlook for this patient. Please respond with either POSITIVE or NEGATIVE answer only.'''
-            else:
-                text_prompt = f'''
-                You are an oncologist at a major cancer hospital, tasked with predicting
-                outcomes for patients.
-                I am going to provide you with clinical notes for a {cancer} patient at 6 months. Here is the summary:
-                '''
-                text_prompt += str(self.test_samples[sample])
-                text_prompt += f'''\nBased on your understanding of the clinical notes for a {cancer} patient at 6 months, classify the {cutoff}
-                    survival outlook for this patient. Please respond with either POSITIVE or NEGATIVE answer only.'''
-            text_prompt += "<|eot_id|><|start_header_id|>assistant<|end_header_id|>The correct answer is "
         if self.summary:
             if self.zeroshot:
                 text_prompt = f'''<|start_header_id|>user<|end_header_id|>You are an oncologist at a major cancer hospital, tasked with predicting outcomes for patients.
@@ -236,7 +216,7 @@ class ModelEvaluator:
                 text_prompt += "Here are the clinical notes:\n"
                 text_prompt += str(self.test_samples[sample])
                 text_prompt += f'''\nPlease analyze the clinical notes carefully, considering factors such as tumor progression, treatment response, symptoms, and any relevant biomarkers. Based on this analysis as well as the knowledge from the previous examples, classify the patient's {cutoff} survival outlook. Respond with either 'POSITIVE' (if the patient is likely to survive beyond {cutoff}s) or 'NEGATIVE' (if the patient is unlikely to survive beyond {cutoff}s).'''
-                text_prompt += "<|eot_id|><|start_header_id|>assistant<|end_header_id|>ANSWER: "
+                text_prompt += "<|eot_id|><|start_header_id|>assistant<|end_header_id|>The correct answer is "
 
         return text_prompt
 
