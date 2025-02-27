@@ -15,7 +15,7 @@ This folder contains high-fidelity synthetic data designed to closely replicate 
 #### 2. `pipeline` - Experimentation Framework  
 This folder contains the core pipeline for executing various learning setups, including:  
 - Zero-shot learning, few-shot learning with dynamic prompting, and summarization-enhanced approaches.  
-- The *RESULTS.ipynb* notebook, showcasing results from running UCSF Glioma data on the *Llama 3.0 8B model*.  
+- The *RESULTS.ipynb* notebook, showcasing results from running UCSF Glioma and Breast cancer data on the *Llama 3.0 8B model* and *Llama 3.0 70B model*.  
 - Additional documentation in the *README.md* file within the *pipeline* folder, detailing implementation and usage.  
 
 ## Contributing to This Work  
