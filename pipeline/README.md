@@ -49,6 +49,45 @@ python3 run_dynamic_prompt.py \
     --cancer_type breast
 ```
 
+# Running the Script with Synthetic Data
+### Step 1: Load the synthetic data and split it into training and testing sets
+```
+data = pd.read_csv("../synthetic_data/GPT_templates_glioma.csv")
+train = data[5:]
+test = data[:4]
+train.shape, test.shape
+```
+### Step 2: Save the training and testing sets as CSV files
+```
+train.to_csv("../synthetic_data/train.csv")
+test.to_csv("../synthetic_data/test.csv")
+```
+### Step 3: Now that the data is ready, run the script using the following command
+```
+command = [
+    "python3",
+    "run_dynamic_prompt.py",
+    "--exp_type", "glioma_8B/dynamic_summary",
+    "--large", "False",
+    "--num_gpus", "4",
+    "--zero_shot", "False",
+    "--examples", f"../synthetic_data/train.csv",
+    "--test_data", f"../synthetic_data/test.csv",
+    "--summary", "True",
+    "--cancer_type", "glioma"
+]
+
+log_file = f"../synthetic_data/logs.txt"
+
+with open(log_file, "w") as log:
+    result = subprocess.run(command, stdout=log, stderr=log)
+
+if result.returncode == 0:
+    print(f"Fold {fold} executed successfully. Logs saved to {log_file}")
+else:
+    print(f"Fold {fold} encountered an error. Check logs at {log_file}")
+```
+
 # Argument Descriptions
 
 | Argument       | Type  | Description |
