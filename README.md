@@ -1,6 +1,6 @@
 # Dynamic Prompting in Predicting Cancer Outcomes from EHR Notes
 
-This repository contains the framework for reproducing the key learning experiments from our study on **[topic]**. Initially developed for our manuscript submission to **[journal/conference]** in **[month, year]**, this framework is expected to evolve with contributions from the community. Enhancements and updates will be tracked through specific commit checkpoints, and as the codebase improves, results may exhibit slight variations from those in the original study.
+This repository contains the framework for reproducing the key learning experiments from our study on dynamic prompting, an in-context learning method built for outcome prediction with EHR notes. Initially developed for our manuscript submission to AAPM 2024, and received the Best in Physics award. Enhancements and updates will be tracked through specific commit checkpoints, and as the codebase improves, results may exhibit slight variations from those in the original study.
 
 ## Using This Repository  
 
@@ -50,6 +50,4 @@ And a special thanks to all other contributors who have improved the project ove
 
 ## Contact
 
-For any scientific inquiries about this repository, please contact **[EMAIL]**
-
-## STATEMENT
+For any scientific inquiries about this repository, please contact **hui.lin@ucsf.edu**
